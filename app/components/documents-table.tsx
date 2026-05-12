@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { SigningDocument, ReprocessJob } from "../types/signing-request";
 import { saveJob, getJob } from "../lib/reprocess-jobs";
@@ -134,34 +133,53 @@ export function DocumentsTable({ docs, directoryId }: { docs: SigningDocument[];
               </td>
               {sortedTypes.map((type) => {
                 const hasSignatory = doc.SingSetting.Signatories.some((s) => s.SigningRepresentative === type);
+                const sig = doc.SingSetting.Signatories.find((s) => s.SigningRepresentative === type);
                 const jobId = cellJobs[cellKey(doc.DocumentId, type)];
+                const j = jobId ? jobStates[jobId] : undefined;
 
-                if (jobId) {
-                  const j = jobStates[jobId];
-                  const isLoading = !j || (j.status === "loading" && !j.manualResult);
-                  const isSuccess = j?.manualResult === "success" || (j?.status === "completed" && !j.manualResult);
-                  return (
-                    <td key={type} className="py-2 px-3 border border-gray-200 text-center">
-                      <Link href={`/reprocess/${jobId}`} title="Ver detalle del reproceso" className="inline-flex items-center justify-center">
-                        {isLoading ? (
-                          <SpinnerIcon className="h-4 w-4 animate-spin text-blue-500" />
-                        ) : isSuccess ? (
-                          <CheckIcon className="h-4 w-4 text-green-600" />
-                        ) : (
-                          <XIcon className="h-4 w-4 text-red-500" />
-                        )}
-                      </Link>
-                    </td>
-                  );
-                }
+                const isLoading = !!jobId && (!j || (j.status === "loading" && !j.manualResult));
+                const isSuccess = !!j && (j.manualResult === "success" || (j.status === "completed" && !j.manualResult));
+                const isError = !!j && (j.manualResult === "failed" || (j.status === "error" && !j.manualResult));
+
+                let btnClass = "bg-blue-600 hover:bg-blue-700"; // idle default
+                if (!hasSignatory) btnClass = "bg-gray-300 cursor-not-allowed";
+                else if (isLoading) btnClass = "bg-yellow-400 cursor-not-allowed";
+                else if (isSuccess) btnClass = "bg-green-500 hover:bg-green-600";
+                else if (isError) btnClass = "bg-red-500 hover:bg-red-600";
 
                 return (
-                  <td key={type} className={`py-2 px-3 border border-gray-200 text-center ${!hasSignatory ? "bg-red-50" : ""}`}>
-                    <input
-                      type="checkbox"
-                      disabled={!hasSignatory}
-                      className={`h-4 w-4 rounded border-gray-300 ${hasSignatory ? "text-blue-600 focus:ring-blue-500 cursor-pointer" : "cursor-not-allowed opacity-30"}`}
-                    />
+                  <td
+                    key={type}
+                    className={`py-2 px-3 border border-gray-200 text-center ${!hasSignatory ? "bg-red-50" : ""}`}
+                  >
+                    <button
+                      type="button"
+                      disabled={!hasSignatory || isLoading}
+                      onClick={() => sig && reprocessCell(doc, sig)}
+                      onContextMenu={(e) => {
+                        if (!jobId) return;
+                        e.preventDefault();
+                        router.push(`/reprocess/${jobId}`);
+                      }}
+                      title={
+                        !hasSignatory
+                          ? "Sin firmante"
+                          : jobId
+                          ? "Click: reprocesar · Click derecho: ver detalle"
+                          : "Click: reprocesar"
+                      }
+                      className={`w-7 h-7 rounded-full text-white inline-flex items-center justify-center transition-colors disabled:opacity-70 ${btnClass}`}
+                    >
+                      {isLoading ? (
+                        <SpinnerIcon className="h-3.5 w-3.5 animate-spin" />
+                      ) : isSuccess ? (
+                        <CheckIcon className="h-3.5 w-3.5" />
+                      ) : isError ? (
+                        <XIcon className="h-3.5 w-3.5" />
+                      ) : (
+                        <span className="text-xs font-bold leading-none">O</span>
+                      )}
+                    </button>
                   </td>
                 );
               })}
