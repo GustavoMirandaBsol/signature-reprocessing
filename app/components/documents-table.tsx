@@ -168,7 +168,7 @@ export function DocumentsTable({ docs, directoryId }: { docs: SigningDocument[];
                           ? "Click: reprocesar · Click derecho: ver detalle"
                           : "Click: reprocesar"
                       }
-                      className={`w-7 h-7 rounded-full text-white inline-flex items-center justify-center transition-colors disabled:opacity-70 ${btnClass}`}
+                      className={`w-7 h-7 rounded-full inline-flex items-center justify-center transition-colors disabled:opacity-70 ${hasSignatory ? "text-white" : "text-gray-400"} ${btnClass}`}
                     >
                       {isLoading ? (
                         <SpinnerIcon className="h-3.5 w-3.5 animate-spin" />
