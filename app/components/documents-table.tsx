@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import type { SigningDocument, ReprocessJob } from "../types/signing-request";
+import { buildCurlCommand } from "../lib/curl-command";
 import { saveJob, getJob } from "../lib/reprocess-jobs";
 import { useSigningRequests } from "../context/signing-requests";
 import { DOCUMENT_NAMES, PARTICIPANT_LABELS, API_BASE } from "../lib/constants";
@@ -20,11 +21,14 @@ export function DocumentsTable({ docs, directoryId }: { docs: SigningDocument[];
     ...new Set(docs.flatMap((doc) => doc.SingSetting.Signatories.map((s) => s.SigningRepresentative))),
   ].sort((a, b) => a - b);
 
-  const cellJobs: CellJobs = cellJobsMap[directoryId] ?? {};
+  const cellJobs: CellJobs = useMemo(() => cellJobsMap[directoryId] ?? {}, [cellJobsMap, directoryId]);
   const cellJobsRef = useRef(cellJobs);
-  cellJobsRef.current = cellJobs;
 
   const [jobStates, setJobStates] = useState<Record<string, ReprocessJob>>({});
+
+  useEffect(() => {
+    cellJobsRef.current = cellJobs;
+  }, [cellJobs]);
 
   useEffect(() => {
     function refresh() {
@@ -88,20 +92,32 @@ export function DocumentsTable({ docs, directoryId }: { docs: SigningDocument[];
     };
 
     try {
+      const requestBody = JSON.stringify({
+        InterviewId: sig.InterviewId,
+        DirectoryId: directoryId,
+        FlowType: 0,
+        SigningRepresentative: sig.SigningRepresentative,
+      });
       const res = await fetch(`${API_BASE}/${doc.DocumentId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          InterviewId: sig.InterviewId,
-          DirectoryId: directoryId,
-          FlowType: 0,
-          SigningRepresentative: sig.SigningRepresentative,
-        }),
+        body: requestBody,
       });
       const text = await res.text();
+      const payloadFile = res.headers.get("X-Reprocess-Payload-File") ?? undefined;
+      const postUrl = res.headers.get("X-Reprocess-Post-Url") ?? undefined;
+      const curlCommand = postUrl ? buildCurlCommand(postUrl, requestBody) : undefined;
       let response: unknown;
       try { response = JSON.parse(text); } catch { response = text; }
-      saveJob({ ...baseJob, status: res.ok ? "completed" : "error", response, completedAt: new Date().toISOString() });
+      saveJob({
+        ...baseJob,
+        status: res.ok ? "completed" : "error",
+        response,
+        payloadFile,
+        postUrl,
+        curlCommand,
+        completedAt: new Date().toISOString(),
+      });
     } catch (err) {
       saveJob({
         ...baseJob,

@@ -1,13 +1,18 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import type { SigningRequest } from "../types/signing-request";
 import { useSigningRequests } from "../context/signing-requests";
+import { buildCurlCommand } from "../lib/curl-command";
+import { saveJob } from "../lib/reprocess-jobs";
+import { PARTICIPANT_LABELS } from "../lib/constants";
 import { DocumentsTable } from "./documents-table";
 import { CopyButton } from "./copy-button";
 import { SpinnerIcon, CheckIcon, XIcon, ChevronDownIcon, PenIcon } from "./icons";
 
 type SignStatus = "idle" | "loading" | "success" | "error";
+type OwnerStatus = "idle" | "loading" | "completed" | "error";
 
 const SIGN_BUTTON_CLASS: Record<SignStatus, string> = {
   idle: "bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50",
@@ -23,6 +28,39 @@ const SIGN_LABEL: Record<SignStatus, string> = {
   error: "Reintentar",
 };
 
+type ParticipantPanelInfo = {
+  id: string;
+  documentDirectoryId: string;
+  interviewId: string;
+};
+
+function emptyLabel(value: string | undefined): string {
+  return value && value.trim() ? value : "—";
+}
+
+function getParticipantPanelInfo(request: SigningRequest, signingRepresentative: number): ParticipantPanelInfo {
+  const signatory = request.Documents.flatMap((doc) => doc.SingSetting.Signatories)
+    .find((sig) => sig.SigningRepresentative === signingRepresentative);
+
+  return {
+    id: emptyLabel(signatory?.ClientGuid),
+    documentDirectoryId: emptyLabel(signatory?.ClientDirectoryId),
+    interviewId: emptyLabel(signatory?.InterviewId),
+  };
+}
+
+function PanelValue({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-xs text-gray-400">{label}</dt>
+      <dd className="flex min-w-0 items-center gap-1.5">
+        <span className="font-mono text-xs text-gray-600 break-all">{value}</span>
+        {value !== "—" && <CopyButton text={value} />}
+      </dd>
+    </div>
+  );
+}
+
 export function RequestCard({
   request,
   index,
@@ -32,22 +70,25 @@ export function RequestCard({
   index: number;
   onRemove: () => void;
 }) {
-  const { expandedMap, setExpanded: setGlobalExpanded, rawJsonMap } = useSigningRequests();
+  const router = useRouter();
+  const { expandedMap, setExpanded: setGlobalExpanded } = useSigningRequests();
   const expanded = expandedMap[request.DocumentDirectoryId] ?? false;
   const setExpanded = (val: boolean) => setGlobalExpanded(request.DocumentDirectoryId, val);
 
   const [signStatus, setSignStatus] = useState<SignStatus>("idle");
   const [signError, setSignError] = useState<string | null>(null);
 
+  const [ownerStatuses, setOwnerStatuses] = useState<Record<number, OwnerStatus>>({});
+  const [ownerJobIds, setOwnerJobIds] = useState<Record<number, string>>({});
+
   async function handleSign() {
-    const rawJson = rawJsonMap[request.DocumentDirectoryId] ?? JSON.stringify(request);
     setSignStatus("loading");
     setSignError(null);
     try {
       const res = await fetch("/api/sign", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: rawJson,
+        body: JSON.stringify(request),
       });
       if (res.ok) {
         setSignStatus("success");
@@ -61,9 +102,72 @@ export function RequestCard({
     }
   }
 
-  const titularId =
-    request.Documents.flatMap((d) => d.SingSetting.Signatories)
-      .find((s) => s.SigningRepresentative === 2)?.ClientGuid ?? "—";
+  function getSignatoryByRep(rep: number) {
+    return request.Documents.flatMap((doc) => doc.SingSetting.Signatories)
+      .find((sig) => sig.SigningRepresentative === rep);
+  }
+
+  async function registerDocumentOwner(signingRepresentative: number) {
+    if (ownerStatuses[signingRepresentative] === "loading") return;
+    const sig = getSignatoryByRep(signingRepresentative);
+    if (!sig) return;
+
+    const jobId = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const label = PARTICIPANT_LABELS[signingRepresentative] ?? `Tipo ${signingRepresentative}`;
+
+    setOwnerStatuses((prev) => ({ ...prev, [signingRepresentative]: "loading" }));
+    setOwnerJobIds((prev) => ({ ...prev, [signingRepresentative]: jobId }));
+
+    const baseJob = {
+      id: jobId,
+      documentId: "",
+      documentName: "Document Owner",
+      signingRepresentative,
+      participantLabel: label,
+      interviewId: sig.InterviewId,
+      directoryId: request.DocumentDirectoryId,
+      clientGuid: sig.ClientGuid,
+      startedAt: now,
+    };
+
+    saveJob({ ...baseJob, status: "loading" });
+
+    const requestBody = JSON.stringify({
+      InterviewId: sig.InterviewId,
+      DirectoryId: request.DocumentDirectoryId,
+      ClientGuid: sig.ClientGuid,
+      FlowType: request.FlowType,
+    });
+
+    try {
+      const res = await fetch("/api/document-owner", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: requestBody,
+      });
+      const text = await res.text();
+      const payloadFile = res.headers.get("X-Reprocess-Payload-File") ?? undefined;
+      const postUrl = res.headers.get("X-Reprocess-Post-Url") ?? undefined;
+      const curlCommand = postUrl ? buildCurlCommand(postUrl, requestBody) : undefined;
+      let response: unknown;
+      try { response = JSON.parse(text); } catch { response = text; }
+      const status: OwnerStatus = res.ok ? "completed" : "error";
+      saveJob({ ...baseJob, status, response, payloadFile, postUrl, curlCommand, completedAt: new Date().toISOString() });
+      setOwnerStatuses((prev) => ({ ...prev, [signingRepresentative]: status }));
+    } catch (err) {
+      saveJob({
+        ...baseJob,
+        status: "error",
+        response: err instanceof Error ? err.message : String(err),
+        completedAt: new Date().toISOString(),
+      });
+      setOwnerStatuses((prev) => ({ ...prev, [signingRepresentative]: "error" }));
+    }
+  }
+
+  const titular = getParticipantPanelInfo(request, 2);
+  const codeudor = getParticipantPanelInfo(request, 3);
 
   return (
     <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
@@ -124,18 +228,13 @@ export function RequestCard({
 
       {expanded && (
         <div className="px-5 py-4 space-y-4">
-          <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
-            <div>
-              <dt className="text-xs text-gray-400">Id titular</dt>
-              <dd className="flex items-center gap-1.5">
-                <span className="font-mono text-xs text-gray-600 truncate">{titularId}</span>
-                <CopyButton text={titularId} />
-              </dd>
-            </div>
-            <div>
-              <dt className="text-xs text-gray-400">Dir. documentos</dt>
-              <dd className="font-mono text-xs text-gray-600 truncate">{request.DocumentDirectoryId}</dd>
-            </div>
+          <dl className="grid grid-cols-1 gap-x-6 gap-y-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
+            <PanelValue label="Id titular" value={titular.id} />
+            <PanelValue label="Id codeudor" value={codeudor.id} />
+            <PanelValue label="Dir. documentos titular" value={titular.documentDirectoryId} />
+            <PanelValue label="Dir. documentos codeudor" value={codeudor.documentDirectoryId} />
+            <PanelValue label="InterviewId titular" value={titular.interviewId} />
+            <PanelValue label="InterviewId codeudor" value={codeudor.interviewId} />
             <div>
               <dt className="text-xs text-gray-400">Owner completo</dt>
               <dd>
@@ -145,6 +244,51 @@ export function RequestCard({
               </dd>
             </div>
           </dl>
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">Document Owner</p>
+            <div className="flex flex-wrap gap-2">
+              {([{ rep: 2, label: "Titular" }, { rep: 3, label: "Codeudor" }] as const).map(({ rep, label }) => {
+                const sig = getSignatoryByRep(rep);
+                if (!sig) return null;
+                const status = ownerStatuses[rep] ?? "idle";
+                const jobId = ownerJobIds[rep];
+                const isLoading = status === "loading";
+                const btnClass =
+                  isLoading ? "bg-purple-600 text-white opacity-70 cursor-not-allowed" :
+                  status === "completed" ? "bg-green-100 text-green-700 hover:bg-green-200" :
+                  status === "error" ? "bg-red-100 text-red-700 hover:bg-red-200" :
+                  "bg-purple-600 text-white hover:bg-purple-700";
+                return (
+                  <div key={rep} className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={isLoading}
+                      onClick={() => registerDocumentOwner(rep)}
+                      className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${btnClass}`}
+                    >
+                      {isLoading ? <SpinnerIcon className="h-3.5 w-3.5 animate-spin" /> :
+                       status === "completed" ? <CheckIcon className="h-3.5 w-3.5" /> :
+                       status === "error" ? <XIcon className="h-3.5 w-3.5" /> : null}
+                      {isLoading ? "Registrando…" :
+                       status === "completed" ? `Owner ${label} ok` :
+                       status === "error" ? `Error ${label} — reintentar` :
+                       `Registrar Owner ${label}`}
+                    </button>
+                    {jobId && (
+                      <button
+                        type="button"
+                        onClick={() => router.push(`/reprocess/${jobId}`)}
+                        className="text-xs text-blue-600 hover:underline"
+                      >
+                        Ver detalle
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
           <div>
             <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-400">
               Documentos ({request.Documents.length})

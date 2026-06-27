@@ -6,6 +6,7 @@ import Link from "next/link";
 import type { ReprocessJob } from "../../types/signing-request";
 import { getJob, saveJob } from "../../lib/reprocess-jobs";
 import { SpinnerIcon, CheckIcon, XIcon, BackArrowIcon } from "../../components/icons";
+import { CopyButton } from "../../components/copy-button";
 
 function elapsedLabel(startedAt: string, completedAt?: string): string {
   const secs = Math.floor(
@@ -34,35 +35,43 @@ const MANUAL_COLORS: Record<"success" | "failed", string> = {
   failed: "bg-red-100 text-red-700 border-red-300",
 };
 
+function getJobSnapshot(id: string): { job: ReprocessJob | null; elapsed: string } {
+  const job = getJob(id);
+  return {
+    job,
+    elapsed: job ? elapsedLabel(job.startedAt, job.completedAt) : "",
+  };
+}
+
 export default function ReprocessDetailPage() {
   const params = useParams();
   const id = Array.isArray(params.id) ? params.id[0] : (params.id as string) ?? "";
 
-  const [job, setJob] = useState<ReprocessJob | null>(null);
-  const [elapsed, setElapsed] = useState("");
-  const [notFound, setNotFound] = useState(false);
+  const [snapshot, setSnapshot] = useState(() => getJobSnapshot(id));
 
   const reload = useCallback(() => {
-    const j = getJob(id);
-    if (!j) { setNotFound(true); return; }
-    setJob(j);
-    setElapsed(elapsedLabel(j.startedAt, j.completedAt));
+    setSnapshot(getJobSnapshot(id));
   }, [id]);
 
   useEffect(() => {
-    reload();
+    const initial = setTimeout(reload, 0);
     const interval = setInterval(reload, 1000);
-    return () => clearInterval(interval);
+    return () => {
+      clearTimeout(initial);
+      clearInterval(interval);
+    };
   }, [reload]);
 
-  function setManualResult(result: "success" | "failed" | null) {
+  const { job, elapsed } = snapshot;
+
+  function setManualResult(result: "success" | "failed" | null): void {
     if (!job) return;
     const updated = { ...job, manualResult: result };
     saveJob(updated);
-    setJob(updated);
+    setSnapshot({ job: updated, elapsed: elapsedLabel(updated.startedAt, updated.completedAt) });
   }
 
-  if (notFound) {
+  if (!job) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6">
         <div className="text-center space-y-3">
@@ -72,14 +81,6 @@ export default function ReprocessDetailPage() {
           </p>
           <Link href="/" className="text-blue-600 text-sm hover:underline">← Volver</Link>
         </div>
-      </div>
-    );
-  }
-
-  if (!job) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <SpinnerIcon className="h-6 w-6 animate-spin text-blue-500" />
       </div>
     );
   }
@@ -127,6 +128,24 @@ export default function ReprocessDetailPage() {
             <p className="text-xs text-gray-400 mb-0.5">DirectoryId</p>
             <p className="font-mono text-xs text-gray-700">{job.directoryId}</p>
           </div>
+          {job.clientGuid && (
+            <div className="px-5 py-3">
+              <p className="text-xs text-gray-400 mb-0.5">ClientGuid</p>
+              <p className="font-mono text-xs text-gray-700">{job.clientGuid}</p>
+            </div>
+          )}
+          {job.payloadFile && (
+            <div className="px-5 py-3">
+              <p className="text-xs text-gray-400 mb-0.5">Archivo payload</p>
+              <p className="font-mono text-xs text-gray-700 break-all">{job.payloadFile}</p>
+            </div>
+          )}
+          {job.postUrl && (
+            <div className="px-5 py-3">
+              <p className="text-xs text-gray-400 mb-0.5">URL POST</p>
+              <p className="font-mono text-xs text-gray-700 break-all">{job.postUrl}</p>
+            </div>
+          )}
           <div className="px-5 py-3 grid grid-cols-2 gap-4">
             <div>
               <p className="text-xs text-gray-400 mb-0.5">Iniciado</p>
@@ -140,6 +159,20 @@ export default function ReprocessDetailPage() {
             )}
           </div>
         </div>
+
+        {job.curlCommand && (
+          <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
+            <div className="px-5 py-3 bg-gray-50 border-b border-gray-200 flex items-center justify-between gap-3">
+              <p className="text-xs font-semibold uppercase tracking-wider text-gray-500">cURL</p>
+              <CopyButton text={job.curlCommand} />
+            </div>
+            <div className="p-4">
+              <pre className="text-xs text-gray-800 whitespace-pre-wrap break-all font-mono bg-gray-50 rounded-lg p-3 max-h-64 overflow-y-auto">
+                {job.curlCommand}
+              </pre>
+            </div>
+          </div>
+        )}
 
         {job.response !== undefined && (
           <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">

@@ -49,6 +49,10 @@ export interface ReprocessJob {
   startedAt: string;
   status: "loading" | "completed" | "error";
   response?: unknown;
+  clientGuid?: string;
+  payloadFile?: string;
+  postUrl?: string;
+  curlCommand?: string;
   manualResult?: "success" | "failed" | null;
   completedAt?: string;
 }
